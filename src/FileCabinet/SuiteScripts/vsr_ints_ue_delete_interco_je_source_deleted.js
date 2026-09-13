@@ -16,17 +16,20 @@
  * listed above (a separate Deployment record per type, all pointing at
  * this script) - a single deployment only applies to one record type.
  *
- * As a safety check, before deleting a linked JE this script re-loads it
- * and confirms its own custbody_vsr_ints_source_tran_interco field still
- * points back to the transaction being deleted, so it will never delete a
- * JE that was manually re-linked or re-purposed after creation.
+ * As a defensive design note: this script does NOT attempt to re-verify
+ * the JE's own custbody_vsr_ints_source_tran_interco field before
+ * deleting, because NetSuite automatically nulls out List/Record:
+ * Transaction fields that reference a record once that record is deleted
+ * - so that field is already cleared by the platform itself by the time
+ * this script runs. The source transaction's own
+ * custbody_linked_allocation_transaction value (captured before deletion)
+ * is the reliable source of truth instead.
  * ---------------------------------------------------------------------
  */
 define(['N/record', 'N/log'], (record, log) => {
 
-    // Fixed script IDs - same convention as the Map/Reduce script.
+    // Fixed script ID - same convention as the Map/Reduce script.
     const SOURCE_LINK_FIELD = 'custbody_linked_allocation_transaction';
-    const JE_SOURCE_FIELD = 'custbody_vsr_ints_source_tran_interco';
 
     const afterSubmit = (context) => {
         if (context.type !== context.UserEventType.DELETE) {
@@ -64,24 +67,16 @@ define(['N/record', 'N/log'], (record, log) => {
 
         linkedJeIds.forEach((jeId) => {
             try {
-                // Safety check: confirm the JE still points back to the
-                // source being deleted before removing it, so a JE that
-                // was manually re-linked elsewhere is left alone.
-                const jeSourceRef = record.load({
-                    type: record.Type.JOURNAL_ENTRY,
-                    id: jeId,
-                    isDynamic: false
-                }).getValue({ fieldId: JE_SOURCE_FIELD });
-
-                if (String(jeSourceRef) !== sourceInternalId) {
-                    log.error(
-                        'afterSubmit - skipped JE',
-                        'Interco JE ' + jeId + ' does not reference source ' + sourceInternalId +
-                        ' (found: ' + jeSourceRef + ') - skipping delete to avoid removing a re-linked JE.'
-                    );
-                    return;
-                }
-
+                // NOTE: we intentionally do NOT re-check the JE's own
+                // custbody_vsr_ints_source_tran_interco field here.
+                // NetSuite automatically nulls out List/Record: Transaction
+                // fields that point to a record once that record is
+                // deleted - so by the time this afterSubmit runs, the JE's
+                // back-reference to this source has already been cleared
+                // by the platform itself, before we ever get to read it.
+                // The source's own multi-select field (captured above from
+                // oldRecord, before deletion) is the reliable source of
+                // truth here instead.
                 record.delete({ type: record.Type.JOURNAL_ENTRY, id: jeId });
 
                 log.audit(
